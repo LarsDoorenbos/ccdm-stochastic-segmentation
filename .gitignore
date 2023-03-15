@@ -1,3 +1,11 @@
+output*/
+output.txt
+run.txt
+evaluation/results/
+data/
+*.pth
+*.png
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
