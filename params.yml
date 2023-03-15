@@ -1,0 +1,76 @@
+output_path: "./logs/output_${SLURM_JOB_ID}_${NOW}"
+
+cudnn:
+    benchmark: yes
+    enabled: yes
+
+dataset_file: datasets.lidc
+
+dataset_pipeline_train: ["flip",  "resize", "colorjitter", "torchvision_normalise"]
+dataset_pipeline_train_settings:
+    target_size:  [128, 256]
+
+dataset_pipeline_val: ["resize", "torchvision_normalise"]
+dataset_pipeline_val_settings:
+    target_size: [128, 256]
+
+dataset_val_max_size: 100  # One of "null" (=full val size), or any number
+class_weights: "uniform"
+
+multigpu: no
+distributed: no
+mp_loaders: 4
+batch_size: 16
+samples: 12 # For GED calculation
+max_epochs: 2000
+
+optim:
+    name: "Adam"
+    learning_rate: 1.0e-4
+    lr_function: "polynomial"
+    lr_params:
+        power: 1.0     # setting to 1.0 means linear decay
+        min_lr: 1.0e-6 # learning rate value for the final step of training
+    epochs: 2000 # total number of epochs to train for if missing then trains for max_epochs (for step > epochs lr = min_lr)
+
+polyak_alpha: 0.9999
+beta_schedule: "cosine" # One of ["cosine", "linear"]
+beta_schedule_params:
+    s: 0.008
+
+backbone: "unet_openai"
+
+diffusion_type: "categorical"
+time_steps: 250
+
+feature_cond_encoder:
+    type: 'none' # ['dino', 'none']
+    model: 'dino_vits8' # 'dino_vitb8
+    channels: 384 # 768 for vitb, 384 for vits
+    conditioning: "concat_pixels_concat_features"
+    output_stride: 8  # at what output_stride in the unet to plug features
+    scale: 'single'
+    train: no
+    source_layer: 11 # layer 11 is always the last layer of any dino vit model
+    target_layer: 10 # at what output_stride in the unet to plug features
+
+validation_freq: 2500
+display_freq: 100
+n_validation_predictions: 3
+n_validation_images: 3
+
+wandb: no 
+wandb_mode: 'online'  # ['online', 'offline']
+wandb_project: ccdm
+
+
+unet_openai:
+    base_channels: 32  # 64
+    channel_mult: null  # [1, 2, 3.5, 4, 5]
+    attention_resolutions: [32, 16, 8]
+    num_heads: 1  # Ignored if num_head_channels is not -1
+    num_head_channels: 32  # If not -1, num_heads is automatically set to channels//num_head_channels
+    softmax_output: yes # this is the default for build_model
+
+load_from: null
+
