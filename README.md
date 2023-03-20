@@ -2,7 +2,7 @@
 
 The official code repo for the paper "Stochastic Segmentation with Conditional Categorical Diffusion Models".
 
-Paper: https://arxiv.org/abs/tbd
+Paper: https://arxiv.org/abs/2303.08888
 
 <img src="assets/teaser.png" width="621" height="304" />
 
