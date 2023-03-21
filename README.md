@@ -57,7 +57,12 @@ python ddpm_eval.py params_eval.yml
 ## Citation
 If you find our work relevant to your research, please cite:
 ```
-tbd
+@article{zbinden2023stochastic,
+  title={Stochastic Segmentation with Conditional Categorical Diffusion Models},
+  author={Zbinden, Lukas and Doorenbos, Lars and Pissas, Theodoros and Sznitman, Raphael and M{\'a}rquez-Neila, Pablo},
+  journal={arXiv preprint arXiv:2303.08888},
+  year={2023}
+}
 ```
 
 ## License
