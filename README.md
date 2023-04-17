@@ -17,7 +17,7 @@ pip install -r requirements.txt
 ### LIDC
 For LIDCv1: We used the data available on [Stefan Knegt's gihub page](https://github.com/stefanknegt/Probabilistic-Unet-Pytorch).
 
-For LIDCv2:  This split of LIDC can be found on the github page of [Hierarchical Probabilistic U-Net](https://github.com/deepmind/deepmind-research/tree/master/hierarchical_probabilistic_unet).
+For LIDCv2:  This split of LIDC can be found on the github page of [Hierarchical Probabilistic U-Net](https://github.com/deepmind/deepmind-research/tree/master/hierarchical_probabilistic_unet) or from this [Google Drive link](https://drive.google.com/drive/folders/13KWz8GS5Agrg8vg-N2CLa_ltEWGRWvWd).
 
 ### Cityscapes
 Download from here: [Cityscapes dataset](https://www.cityscapes-dataset.com/).
