@@ -2,7 +2,7 @@
 
 The official code repo for the paper "Stochastic Segmentation with Conditional Categorical Diffusion Models".
 
-Paper: https://arxiv.org/abs/tbd
+Paper: https://arxiv.org/abs/2303.08888
 
 <img src="assets/teaser.png" width="621" height="304" />
 
@@ -57,7 +57,12 @@ python ddpm_eval.py params_eval.yml
 ## Citation
 If you find our work relevant to your research, please cite:
 ```
-tbd
+@article{zbinden2023stochastic,
+  title={Stochastic Segmentation with Conditional Categorical Diffusion Models},
+  author={Zbinden, Lukas and Doorenbos, Lars and Pissas, Theodoros and Sznitman, Raphael and M{\'a}rquez-Neila, Pablo},
+  journal={arXiv preprint arXiv:2303.08888},
+  year={2023}
+}
 ```
 
 ## License
