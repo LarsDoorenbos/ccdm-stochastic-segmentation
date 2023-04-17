@@ -39,14 +39,12 @@ def main(argv):
     if 'lidc_sampling_speed' in params['dataset_file']:
         params['dataset_file'] = "datasets.lidc"
         eval_lidc_sampling_speed(params)
-        return
-    if 'lidc' in params['dataset_file']:
-        eval_lidc_uncertainty(params)
-        return
-    
-    if params['run_cdm_eval_v2']:
+    elif 'lidc' in params['dataset_file']:
+        eval_lidc_uncertainty(params)   
+    elif 'cityscapes' in params['dataset_file']:
         run_inference_only_cdm(params)
-        return
+    else:
+        raise ValueError("Unknown dataset")
 
 
 if __name__ == "__main__":

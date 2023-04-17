@@ -2,7 +2,6 @@ output_path: "./logs/output_${SLURM_JOB_ID}_${NOW}"
 evaluation_path: "./evaluation/results"
 evaluations: 8  # for multiple evaluations with majority vote and for LIDC number of samples
 evaluation_vote_strategy: "confidence"  # One of ["majority", "confidence"]
-run_cdm_eval_v2: no
 
 dataset_file: datasets.lidc
 dataset_split: 'val'  # One of ['val', 'test']
@@ -40,12 +39,8 @@ beta_schedule_params:
     s: 0.008
 time_steps: 250
 
-
 backbone: "unet_openai"  # One of ["unetplus", "unet_openai", "resnet50", "resnet101"]
 
-cond_encoder: 'none' # ['none', 'resnet']
-train_encoder: no
-conditioning: 'concat' # ['x-attention' or 'sum', 'concat', 'concat_linproj']
 feature_cond_encoder:
     type: 'none' # ['dino', 'none']
     model: 'dino_vits8' # 'dino_vitb8

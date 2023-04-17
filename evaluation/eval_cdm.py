@@ -1,3 +1,4 @@
+
 import importlib
 import logging
 import os
@@ -17,24 +18,19 @@ from ignite.engine import Engine, Events
 from ignite.handlers import global_step_from_engine
 from ignite.metrics import ConfusionMatrix, mIoU, IoU
 from ignite.utils import setup_logger
-# from mmseg.apis import inference_segmentor, init_segmentor
+
 from torch import nn, Tensor
 from torch.nn.functional import one_hot
 from torch.utils.data import DataLoader
 
-# from deeplabv3plus.facade import load_deeplabv3plus_trained
-# from deeplabv3plus.utils import Denormalize
 from datasets.pipelines.transforms import build_transforms
 from ddpm.models import DenoisingModel
 from ddpm.models.one_hot_categorical import OneHotCategoricalBCHW
-from ddpm.trainer import _build_model, _build_cond_encoder, _build_feature_cond_encoder
+from ddpm.trainer import _build_model, _build_feature_cond_encoder
 from ddpm.utils import expanduservars, archive_code, worker_init_fn
-from .cs_eval import evaluateImgLists, args
-# from misc.crf import run_dense_crf
-from .utils import _flatten, create_new_directory
 
-# from .cs_eval import evaluateImgLists, args
-# from .labels import id2label
+from .cs_eval import evaluateImgLists, args
+from .utils import _flatten, create_new_directory
 
 LOGGER = logging.getLogger(__name__)
 Model = Union[DenoisingModel, nn.parallel.DataParallel, nn.parallel.DistributedDataParallel]
@@ -91,14 +87,12 @@ class Evaluator:
     def __init__(self,
                  model: Model,
                  average_model: Model,
-                 cond_encoder: Model,
                  feature_cond_encoder: Model,
                  params: dict,
                  num_classes: int,
                  ignore: int):
 
         self.params = params
-        self.cond_encoder = cond_encoder
         self.feature_cond_encoder = feature_cond_encoder
         self.model = _flatten(model)
         self.average_model = _flatten(average_model)
@@ -136,10 +130,7 @@ class Evaluator:
 
     def load_objects(self, checkpoint: dict, strict=True):
         self.model.unet.load_state_dict(checkpoint["model"], strict)
-        try:
-            self.cond_encoder.load_state_dict(checkpoint["cond_encoder"], strict)
-        except:
-            LOGGER.info(f"no cond_encoder found in checkpoint with entries {checkpoint.keys()}")
+
         try:
             # try average encoder first
             self.feature_cond_encoder.load_state_dict(checkpoint["average_feature_cond_encoder"], strict)
@@ -149,8 +140,8 @@ class Evaluator:
                 self.feature_cond_encoder.load_state_dict(checkpoint["feature_cond_encoder"], strict)
             except:
                 LOGGER.info(f"no feature_cond_encoder found in checkpoint with entries {checkpoint.keys()}")
+
         self.average_model.unet.load_state_dict(checkpoint["average_model"], strict)
-        # ret_average_cond_encoder = self.average_cond_encoder.load_state_dict(checkpoint["average_cond_encoder"])
 
     @property
     def time_steps(self):
@@ -159,12 +150,6 @@ class Evaluator:
     @property
     def diffusion_model(self):
         return self.model.diffusion  # fixme is it any different to use self.average_model instead
-
-    @torch.no_grad()
-    def predict_condition(self, x: Tensor) -> Tensor:
-        # x BCHW -> (B,D,...), D is dim of the features by cond_encoder (spatial dims are arbitrary)
-        self.cond_encoder.eval()
-        return self.cond_encoder(x)
 
     @torch.no_grad()
     def predict_feature_condition(self, x: Tensor) -> Tensor:
@@ -182,10 +167,9 @@ class Evaluator:
     @torch.no_grad()
     def predict(self, xt: Tensor, condition: Tensor, feature_condition: Tensor, label_ref_logits: Optional[Tensor] = None) -> Tensor:
         self.average_model.eval()
-        self.cond_encoder.eval()
         self.feature_cond_encoder.eval()
         ret = self.average_model(x=xt, condition=condition, feature_condition=feature_condition, label_ref_logits=label_ref_logits)
-        # ret is dict {"diffusion_out" : unet's softmaxed output, "logits" : None or output of parallel unet head}
+
         assert ("diffusion_out" in ret)
         return ret["diffusion_out"]
 
@@ -417,14 +401,12 @@ def run_inference(params: dict):
     LOGGER.info(f"Expecting image resolution of {(eval_h_model, eval_w_model)} to build model.")
     input_shapes = [(3, eval_h_model, eval_w_model), (num_classes, eval_h_model, eval_w_model)]
 
-    cond_encoder, _ = _build_cond_encoder(params)
-    cond_encoded_shape = None if params["conditioning"] != 'x-attention' \
-        else cond_encoder(data_loader.dataset[0][0][None].to(idist.device())).shape  # fixme what this gives
+    cond_encoded_shape = input_shapes[0]
 
     feature_cond_encoder = _build_feature_cond_encoder(params)
 
     model, average_model = [_build_model(params, input_shapes, cond_encoded_shape) for _ in range(2)]
-    evaluator = Evaluator(model, average_model, cond_encoder, feature_cond_encoder, params, num_classes, ignore_class)
+    evaluator = Evaluator(model, average_model, feature_cond_encoder, params, num_classes, ignore_class)
     engine_test = build_engine(evaluator, num_classes, ignore_class, params, train_ids_to_class_names)
 
     load_from = params.get('load_from', None)
