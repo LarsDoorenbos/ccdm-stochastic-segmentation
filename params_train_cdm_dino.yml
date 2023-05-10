@@ -25,7 +25,7 @@ mp_loaders: 2
 batch_size: 16
 grad_accumulation: no
 grad_accumulation_step: 4
-max_epochs: 1
+max_epochs: 800
 
 optim:
     name: "Adam"
