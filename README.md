@@ -15,25 +15,19 @@ pip install -r requirements.txt
 ```
 
 ## Datasets
-### LIDC
+
+## Cityscapes
+Download from here: [Cityscapes dataset](https://www.cityscapes-dataset.com/).
+Please switch to branch `cts` for the experiments on Cityscapes dataset and follow Cityscapes.md for instructions.
+
+## LIDC
 For LIDCv1: We used the data available on [Stefan Knegt's gihub page](https://github.com/stefanknegt/Probabilistic-Unet-Pytorch).
 
 For LIDCv2:  This split of LIDC can be found on the github page of [Hierarchical Probabilistic U-Net](https://github.com/deepmind/deepmind-research/tree/master/hierarchical_probabilistic_unet) or from this [Google Drive link](https://drive.google.com/drive/folders/13KWz8GS5Agrg8vg-N2CLa_ltEWGRWvWd).
-
-### Cityscapes
-Download from here: [Cityscapes dataset](https://www.cityscapes-dataset.com/).
-
-## Training
-### Segmentation with multiple annotations
+### Training (Segmentation with multiple annotations)
 For training on LIDCv1, copy the dataset to `${TMPDIR}/data_lidc.hdf5`, and, in `params.yml`, set:
 ```
 dataset_file: datasets.lidc
-```
-
-### Segmentation with a single annotations
-For training on Cityscapes, copy the dataset to `${TMPDIR}/cityscapes/`, and, in `params.yml`, set:
-```
-dataset_file: datasets.cityscapes
 ```
 
 To run the training:
@@ -41,15 +35,12 @@ To run the training:
 python ddpm_train.py params.yml
 ```
 
-## Evaluation
+### Evaluation
 For evalution on LIDC, in `params_eval.yml`, set:
 ```
 dataset_file: datasets.lidc
 ```
-For evalution on Cityscapes, in `params_eval.yml`, set:
-```
-dataset_file: datasets.cityscapes
-```
+
 To run the evaluation:
 ```
 python ddpm_eval.py params_eval.yml
@@ -71,3 +62,9 @@ The code is published under the [MIT License](LICENSE).
 
 ## Updates
 - 15/03/2023 Initial commit.
+- 10/05/2023 Added new branch for cityscapes experiments and released cdm_dino checkpoint.
+
+
+## Acknowledgements
+We made base our implementation of Dino as feature extractor on https://github.com/ShirAmir/dino-vit-features/blob/main/extractor.py
+and also make use the official checkpoints from https://github.com/facebookresearch/dino. We thank their respective authors for open-sourcing.
