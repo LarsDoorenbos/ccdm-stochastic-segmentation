@@ -1,0 +1,69 @@
+output_path: "./logs/output_${SLURM_JOB_ID}_${NOW}"
+evaluation_path: "./evaluation/results"
+
+cudnn:
+    benchmark: yes
+    enabled: yes
+
+dataset_file: datasets.cityscapes
+dataset_split: 'val'  # One of ['val', 'test']
+dataset_val_max_size: null # One of "null" (=full val size), or any number
+class_weights: "uniform"  # One of ["uniform", "weighted"]
+
+#dataset_pipeline_train: ["flip",  "resize", "colorjitter", "torchvision_normalise"]
+#dataset_pipeline_train_settings:
+#    target_size:  [256, 512]
+
+dataset_pipeline_val: ["resize", "torchvision_normalise"]
+dataset_pipeline_val_settings:
+    target_size: [256, 512]
+    return_original_labels: yes
+
+cdm_only: yes
+evaluation:
+    resolution: "dataloader"
+    evaluations: 1  # for multiple evaluations with majority vote
+    evaluation_vote_strategy: "confidence"  # One of ["majority", "confidence"]
+
+multigpu: no
+distributed: no
+mp_loaders: 0
+batch_size: 2
+max_epochs: -1
+wandb: no
+
+polyak_alpha: 0.999
+beta_schedule: "cosine" # One of ["cosine", "linear"]
+beta_schedule_params:
+    s: 0.008
+time_steps: 250
+
+diffusion_type: "categorical" # 'categorical' # # "continuous_analog_bits"
+
+cond_encoder: 'dino_vits8'
+cond_encoder_stride: 8 # ['resnet', 'none']
+train_encoder: no
+conditioning: 'concat_pixels_concat_features' # ['x-attention', 'sum', 'concat', 'concat_linproj']
+
+
+backbone: "unet_openai"
+unet_openai: # 29M model # remove __ to use
+    is_lightweight: no
+    base_channels: 64
+    channel_mult: [1, 1, 2, 2, 4, 4]
+    attention_resolutions: [32, 16, 8]
+    feature_cond_target_output_stride: 8 # output stride where we concatenate dino feats
+    feature_cond_target_module_index: 11  # module index where we concatenate dino feats
+    num_heads: 1
+    num_head_channels: 32  # If not -1, num_heads is automatically set to channels//num_head_channels
+    softmax_output: yes # this is the default for build_model
+    ce_head: no # adds an extra head that predicts logits (distinct from denoising head)
+    dropout: 0.0
+    use_fp16: no
+    use_stem: no
+
+#load_from: null
+
+#load_from: checkpoints/cdm_dino_256x512/cdm_dino_148000.pt
+load_from: checkpoints/cdm_dino_256x512/cdm_dino_256x512.pt
+init_skip_keys: ["cond_encoder", "average_cond_encoder"]

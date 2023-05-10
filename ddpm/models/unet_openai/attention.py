@@ -82,6 +82,10 @@ def Normalize(in_channels):
 
 class CrossAttention(nn.Module):
     def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.):
+        # slightly modified than original version
+        # query = condition_features from pretrained encode
+        # context = key, value = denoising network's features
+
         super().__init__()
         inner_dim = dim_head * heads
         context_dim = default(context_dim, query_dim)
@@ -94,15 +98,19 @@ class CrossAttention(nn.Module):
         self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
 
         self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, query_dim),
+            nn.Linear(inner_dim, context_dim),
             nn.Dropout(dropout)
         )
 
-    def forward(self, x, context=None, mask=None):
+    def forward(self, x, context, mask=None):
+        b, c, *spatial = x.shape
+
         h = self.heads
 
+        x = rearrange(x, 'b c h w -> b (h w) c')
+        context = rearrange(context, 'b c h w -> b (h w) c')
+
         q = self.to_q(x)
-        context = default(context, x)
         k = self.to_k(context)
         v = self.to_v(context)
 
@@ -121,7 +129,10 @@ class CrossAttention(nn.Module):
 
         out = einsum('b i j, b j d -> b i d', attn, v)
         out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
-        return self.to_out(out)
+        out = self.to_out(out)
+        out = rearrange(out, 'b (h w) d -> b h w d', h=spatial[0], w=spatial[1])  # BHWC
+        out = rearrange(out, 'b h w d -> b d h w')  # BCHW
+        return out
 
 
 class BasicTransformerBlock(nn.Module):

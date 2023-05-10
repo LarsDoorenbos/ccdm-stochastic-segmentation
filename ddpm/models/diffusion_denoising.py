@@ -1,12 +1,15 @@
-
 from typing import Optional, Tuple, cast, Union
 import logging
-import math
 
 import torch
+import torch as th
 from torch import Tensor
 from torch import nn
-import numpy as np
+import torch.nn.functional as F
+
+import math
+
+from torch.distributions import Categorical
 
 from .one_hot_categorical import OneHotCategoricalBCHW
 
@@ -128,44 +131,91 @@ class DiffusionModel(nn.Module):
         return torch.einsum("bcdhw,bdhw->bchw", theta_xtm1_xtx0, theta_x0)
 
 
+def kl_div_guidance(logits, label_ref):
+    background_probs = torch.ones_like(label_ref[:, 0]) * -100
+    background_probs = background_probs[:, None]
+
+    label_ref = torch.cat((background_probs, label_ref), dim=1)
+
+    dist = th.log_softmax(logits, dim=1)
+    label_dist = th.log_softmax(label_ref, dim=1)
+
+    return F.kl_div(dist, label_dist, log_target=True)
+
+
 class DenoisingModel(nn.Module):
 
-    def __init__(self, diffusion: DiffusionModel, unet: nn.Module, dataset_file: str, step_T_sample:str = "majority"):
+    def __init__(self, diffusion: DiffusionModel, unet: nn.Module, guidance_scale: float, guidance_scale_weighting: str,
+                 guidance_loss_fn: str, dataset_file: str, label_smoothing: float = 0.0, step_T_sample:str = "majority"):
         super().__init__()
         self.diffusion = diffusion
         self.unet = unet
+        self.guidance_scale = guidance_scale
+        self.guidance_scale_weighting = guidance_scale_weighting
+        self.guidance_loss_fn_name = guidance_loss_fn
         self.dataset_file = dataset_file
         self.step_T_sample = step_T_sample
+
+        self._ce_loss_fn = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        if guidance_loss_fn == "CE":
+            self.guidance_loss_fn = self._ce_loss_fn
+        elif guidance_loss_fn == "CE-2prob":
+            self.guidance_loss_fn = self._cross_entropy_2probs
+        elif guidance_loss_fn == "KLDiv":
+            self.guidance_loss_fn = kl_div_guidance
+        else:
+            raise NotImplementedError(f"unsupported: {guidance_loss_fn}")
+
+    @property
+    def num_classes(self):
+        return self.diffusion.num_classes
 
     @property
     def time_steps(self):
         return self.diffusion.time_steps
 
-    def forward(self, x: Tensor, condition: Tensor, feature_condition: Tensor = None, t: Optional[Tensor] = None, label_ref_logits: Optional[Tensor] = None,
-                validation: bool = False) -> Union[Tensor, dict]:
+    def forward(self, x: Tensor, condition: Tensor,
+                t: Optional[Tensor] = None,
+                label_ref_logits: Optional[Tensor] = None,
+                validation: bool = False,
+                condition_features: Optional[Tensor] = None,
+                get_multiscale_predictions: Optional[bool] = False) -> Union[Tensor, dict]:
 
         if self.training:
             if not isinstance(t, Tensor):
                 raise ValueError("'t' needs to be a Tensor at training time")
             if not isinstance(x, Tensor):
                 raise ValueError("'x' needs to be a Tensor at training time")
-            return self.forward_step(x, condition, feature_condition, t) 
+            return self.forward_step(x, condition, t, condition_features=condition_features,
+                                     get_multiscale_predictions=get_multiscale_predictions)  # returns dictionary with {"diffusion_out":tensor, ...}
         else:
             if validation:
-                return self.forward_step(x, condition, feature_condition, t)
+                return self.forward_step(x, condition, t, condition_features=condition_features)
             if t is None:
-                return self.forward_denoising(x, condition, feature_condition, label_ref_logits=label_ref_logits)
 
-            return self.forward_denoising(x, condition, feature_condition, cast(int, t.item()), label_ref_logits)
+                return self.forward_denoising(x, condition, label_ref_logits=label_ref_logits,
+                                              condition_features=condition_features)
 
-    def forward_step(self, x: Tensor, condition: Tensor, feature_condition: Tensor, t: Tensor) -> Tensor:
-        return self.unet(x, condition, feature_condition=feature_condition, timesteps=t)
+            return self.forward_denoising(x, condition, cast(int, t.item()), label_ref_logits,
+                                          condition_features=condition_features)
 
-    def forward_denoising(self, x: Optional[Tensor], condition: Tensor, feature_condition: Tensor, init_t: Optional[int] = None,
-                          label_ref_logits: Optional[Tensor] = None) -> dict:
+    def forward_step(self, x: Tensor, condition: Tensor, t: Tensor,
+                     condition_features: Optional[Tensor]=None,
+                     get_multiscale_predictions=False) -> Tensor:
+
+        ret = self.unet(x, condition, t, condition_features, get_multiscale_predictions=get_multiscale_predictions)
+        return ret
+
+    def forward_denoising(self, x: Optional[Tensor], condition: Tensor, init_t: Optional[int] = None,
+                          label_ref_logits: Optional[Tensor] = None,
+                          condition_features: Optional[Tensor] = None) -> dict:
 
         if init_t is None:
             init_t = self.time_steps
+
+        # if x is None:
+        #     label_shape = (img.shape[0], self.diffusion.num_classes, *img.shape[2:])
+        #     x = OneHotCategoricalBCHW(logits=torch.zeros(label_shape, device=img.device)).sample()
 
         xt = x
 
@@ -175,23 +225,12 @@ class DenoisingModel(nn.Module):
 
         shape = xt.shape
 
-        if init_t > 10000:
-            K = init_t % 10000
-            assert 0 < K <= self.time_steps
-            if K == self.time_steps:
-                t_values = range(K, 0, -1)
-            else:
-                t_values = [round(t_val) for t_val in np.linspace(self.time_steps, 1, K)]
-                LOGGER.warning(f"Override default {self.time_steps} time steps with {len(t_values)}.")
-        else:
-            t_values = range(init_t, 0, -1)
-
-        for t in t_values:
+        for t in range(init_t, 0, -1):
             # Auxiliary values
             t_ = torch.full(size=(shape[0],), fill_value=t, device=xt.device)
 
             # Predict the noise of x_t
-            ret = self.unet(xt, condition, feature_condition, t_.float())
+            ret = self.unet(xt, condition, t_.float(), condition_features)
             x0pred = ret["diffusion_out"]
 
             probs = self.diffusion.theta_post_prob(xt, x0pred, t_)
@@ -211,8 +250,62 @@ class DenoisingModel(nn.Module):
                 elif self.step_T_sample == "confidence":
                     xt = OneHotCategoricalBCHW(probs=probs).prob_sample()
 
+            # if t == int(init_t / 2) + 1 or t == int(init_t / 2) or t == int(init_t / 2) - 15 or t == 1:
+            # from ddpm.utils import save_x
+            #     save_x(xt, "./logs/output/", timestep=str(t-1))
         ret = {"diffusion_out": xt}
         return ret
+
+    def guidance_fn(self, x, label_ref, guidance_scale_weights):
+        with th.enable_grad():
+            x_in = x.detach().requires_grad_(True)
+            logits = x_in  # think identity function
+
+            loss = self.guidance_loss_fn(logits, label_ref)
+            gradients_unscaled = th.autograd.grad(outputs=loss, inputs=x_in)[0]
+
+            scales = guidance_scale_weights * self.guidance_scale
+            gradients = gradients_unscaled * scales[:, None, :, :]
+            assert len(self._check_tensor(gradients)) == 0
+            return gradients
+
+    def guidance_scale_weights(self, label_ref_logits):
+        label_ref = label_ref_logits.argmax(dim=1)
+
+        if self.guidance_scale_weighting == "binary":
+            guidance_scale_weights = th.zeros_like(label_ref)
+            label_ref_sm = th.softmax(label_ref_logits, dim=1)
+
+            prob_threshold = 0.5
+            for cls in range(label_ref_sm.shape[1]):
+                guidance_scale_weights = th.max(guidance_scale_weights, th.where(label_ref_sm[:, cls, :, :] >= prob_threshold, 1, 0))
+
+        elif self.guidance_scale_weighting == "maxprob":
+            label_ref_sm = th.softmax(label_ref_logits, dim=1)
+            guidance_scale_weights = th.max(label_ref_sm, dim=1)[0]
+
+        elif self.guidance_scale_weighting == "entropy":
+            label_ref_sm = th.softmax(label_ref_logits, dim=1)
+            label_ref_sm = OneHotCategoricalBCHW.channels_last(label_ref_sm)
+            entropy = Categorical(probs=label_ref_sm).entropy()
+            guidance_scale_weights = []  # th.zeros_like(label_ref.argmax(dim=1))
+            for img_b in range(label_ref_sm.shape[0]):
+                img = entropy[img_b]
+                img = img.max() + img.min() - img
+                guidance_scale_weights.append(img)
+            guidance_scale_weights = torch.stack(guidance_scale_weights, dim=0)
+
+        elif self.guidance_scale_weighting == "kldiv":
+            label_ref_sm = th.log_softmax(label_ref_logits, dim=1)
+            uniform_dist = th.ones_like(label_ref_sm) * 1 / label_ref_sm.shape[1]
+
+            guidance_scale_weights = th.sum(F.kl_div(label_ref_sm, uniform_dist, reduction='none'), dim=1)
+        elif self.guidance_scale_weighting == "default":
+            guidance_scale_weights = th.ones_like(label_ref)
+        else:
+            raise NotImplementedError
+
+        return guidance_scale_weights
 
     def _check_tensor(self, tensor: Tensor) -> list:
 
@@ -231,3 +324,88 @@ class DenoisingModel(nn.Module):
             invalid_values.append("neg")
 
         return invalid_values
+
+    def _cross_entropy_2probs(self, probs, label_ref_logits):
+        is_cityscapes = 'cityscapes' in self.dataset_file
+        label_ref = th.softmax(label_ref_logits, dim=1)
+        if is_cityscapes:
+            background_probs = torch.zeros_like(label_ref_logits[:, 0])
+            background_probs = background_probs[:, None]
+            label_ref = torch.cat((label_ref, background_probs), dim=1)
+            return self._ce_loss_fn(probs, label_ref)
+        elif 'voc' in self.dataset_file:
+            # add 22nd class that corresponds to 'void' or unlabelled.
+            unlabelled_probs = torch.zeros_like(label_ref_logits[:, 0])
+            unlabelled_probs = unlabelled_probs[:, None]
+            label_ref = torch.cat((label_ref, unlabelled_probs), dim=1)
+            return self._ce_loss_fn(probs, label_ref)
+        else:
+            return self._ce_loss_fn(probs, label_ref)
+
+
+if __name__ == '__main__':
+
+    from datasets.cityscapes_config import decode_target_to_color
+    from PIL import Image
+    from datasets.cityscapes import encode_target
+    from torchvision import transforms
+    from PIL import Image
+    import numpy as np
+
+
+    def to_numpy(tensor):
+        """Tensor to numpy, calls .cpu() if necessary"""
+        with torch.no_grad():
+            if tensor.device.type == 'cuda':
+                tensor = tensor.cpu()
+            return tensor.numpy()
+
+    def show_tensor_with_pil_label(x, save=False, name=''):
+        # x B,C,H,W
+        assert len(x.shape) == 4
+        b,c,h,w = x.shape
+
+        if c == 1: # integer valued labels
+            x_int = x.squeeze(1).long()
+        else:  # assume onehot otherwise
+            x_int = torch.argmax(x, dim=1, keepdim=True).squeeze(1).long()
+
+        # x_int is B1HW -> x_rgb is B,H,W,3
+        x_rgb = decode_target_to_color(x_int)  # BCHW
+        x_rgb_numpy = to_numpy(x_rgb).astype(np.uint8)
+
+        # only show 1st image in the batch
+        x_pil = Image.fromarray(x_rgb_numpy[0])
+        if save:
+            # x_pil.show()
+            x_pil.save(name)
+        return x
+
+
+    # image_pil = Image.fromarray(np.array(Image.open('2008_000026.png')))
+    image_pil = Image.fromarray(np.array(Image.open('aachen_000008_000019_gtFine_labelIds.png')))
+    # image_pil = Image.open('aachen_000008_000019_gtFine_labelIds.png')
+    # image_pil = np.array(image_pil) + 50
+    image_pil = image_pil.resize(size=(256, 128), resample=Image.NEAREST)
+    image_pil.show()
+    im = torch.tensor(encode_target(transforms.PILToTensor()(image_pil))).long()
+    x0 = torch.nn.functional.one_hot(im, 20).permute(0,3,1,2).to("cuda")
+    # x0 (B,C,H,W)
+    steps = 250
+
+    _steps = list(np.arange(1, steps, 1, dtype=int))
+    _, C, H, W = x0.shape
+
+    # for s in [0.008, 0.1, 0.2, 0.3, 0.4]:
+    for s in [0.5, 0.6, 0.7, 0.8]:
+        noise_params = {"s": s}
+        model = DiffusionModel(schedule='cosine', time_steps=steps, num_classes=20, schedule_params=noise_params).to(
+            "cuda")
+
+        for time_step in _steps:
+            t = torch.tensor([time_step], dtype=torch.long).cuda()
+            xt = model.q_xt_given_x0(x0, t).sample()
+            if time_step % 25 == 0:
+                show_tensor_with_pil_label(xt, save=True, name=f'..\\..\\logs\\noise_schedules\\s={noise_params["s"]}_{time_step}_{H}x{W}.png')
+        a = 1
+

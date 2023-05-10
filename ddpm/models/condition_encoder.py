@@ -1,26 +1,64 @@
-
-import logging
 from typing import Union
-
-import numpy as np
-
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from einops import rearrange
 import ignite.distributed as idist
-
-from datasets.pipelines.transforms import Denormalize
-
+from datasets.pipelines import Denormalize
+import logging
 try:
     from .dino import ViTExtractor
 except:
     from dino import ViTExtractor
 
+import numpy as np
+
 LOGGER = logging.getLogger(__name__)
+
+__all__ = ["build_cond_encoder"]
 
 
 class ConditionEncoder(nn.Module):
     def __init__(self):
         super().__init__()
+
+
+class DummyEncoder(ConditionEncoder):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return x
+
+
+class ResNetEncoder(ConditionEncoder):
+    def __init__(self, train_encoder: bool, conditioning: str):
+        super().__init__()
+        self.model = torch.hub.load('pytorch/vision:v0.6.0', 'resnet34', pretrained=True)
+        self.model.fc = nn.Identity()
+        if not train_encoder:
+            for param in self.model.parameters():
+                param.requires_grad = False
+        self.conditioning = conditioning
+
+    def forward(self, x):
+        x = self.model.conv1(x)
+        x = self.model.bn1(x)
+        x = self.model.relu(x)
+        x = self.model.maxpool(x)
+
+        x = self.model.layer1(x)
+        x = self.model.layer2(x)
+        x = self.model.layer3(x)
+        x = self.model.layer4(x)
+        x = self.model.fc(x)
+        
+        if self.conditioning == 'x-attention':
+            x = rearrange(x, 'b f h w -> b (h w) f')
+        elif self.conditioning == 'sum':
+            x = F.adaptive_avg_pool2d(x, 1).squeeze()
+
+        return x
 
 
 class DinoViT(ConditionEncoder):
@@ -35,48 +73,69 @@ class DinoViT(ConditionEncoder):
         if not train_encoder:
             for param in self.parameters():
                 param.requires_grad = False
-
         self.stride = stride
         self.conditioning = conditioning
         self.layers = layers
         self.resize_shape = resize_shape
+
+    # def parameters(self):
+    #     return self.extractor.model.parameters()
+    #
+    # def eval(self):
+    #     self.extractor.model.eval()
+    #
+    # def train(self):
+    #     self.extractor.model.train()
 
     def forward(self, x: torch.Tensor) -> Union[torch.Tensor, list]:
         f = self.extractor.extract_descriptors(x, self.layers, resize_shape=self.resize_shape)
         return f
 
 
-def create_cond_fis_fn_default(params):
-    denorm = Denormalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225])
-    cond_vis_fn = lambda x: x / 2 + 0.5 if params["dataset_file"] in ['datasets.lidc', 'datasets.lidc_orig'] else denorm(x)
-    return cond_vis_fn
-
-
-def _build_feature_cond_encoder(params: dict):
-    fce_params = params["feature_cond_encoder"]
-    if 'dino' in fce_params['type']:
-        feature_cond_encoder = DinoViT(fce_params["model"],
-                                       fce_params["train"],
-                                       fce_params["conditioning"],
-                                       stride=fce_params['output_stride']).to(idist.device())
-        model_parameters = filter(lambda p: p.requires_grad, feature_cond_encoder.parameters())
-        num_parameters = sum([np.prod(p.size()) for p in model_parameters])
-        LOGGER.info(f"Feature Condition encoder {fce_params} parameters: {num_parameters}")
-        LOGGER.info(f"Feature Condition encoder parameters {num_parameters}")
-
+def build_cond_encoder(params: dict):
+    if params["cond_encoder"] == 'resnet' and params["conditioning"] != 'concat':
+        cond_encoder = ResNetEncoder(params["train_encoder"], params["conditioning"]).to(idist.device())
         cond_vis_fn = lambda x: x * torch.tensor([0.229, 0.224, 0.225], device=x.device)[:, None, None] \
                                 + torch.tensor([0.485, 0.456, 0.406], device=x.device)[:, None, None]
-        
-        if params["distributed"]:
-            if fce_params["train"]:  # add ddp to cond encoder only if training it
-                local_rank = idist.get_local_rank()
-                feature_cond_encoder = nn.parallel.DistributedDataParallel(feature_cond_encoder, device_ids=[local_rank])
-        elif params["multigpu"]:
-            feature_cond_encoder = nn.DataParallel(feature_cond_encoder)
-    else:
-        feature_cond_encoder = None
-        cond_vis_fn = create_cond_fis_fn_default(params)
-        LOGGER.info(f"No Feature Condition encoder in use.")
 
-    return feature_cond_encoder, cond_vis_fn
+    elif "dino" in params["cond_encoder"]:
+        cond_encoder = DinoViT(params["cond_encoder"],
+                               params["train_encoder"],
+                               params["conditioning"],
+                               stride=params['cond_encoder_stride']).to(idist.device())
+        cond_vis_fn = lambda x: x * torch.tensor([0.229, 0.224, 0.225], device=x.device)[:, None, None] \
+                                + torch.tensor([0.485, 0.456, 0.406], device=x.device)[:, None, None]
+
+    else:
+        cond_encoder = DummyEncoder().to(idist.device())
+        denorm = Denormalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
+        cond_vis_fn = lambda x: x / 2 + 0.5 if params["dataset_file"] in ['datasets.toy', 'datasets.toy_cont',
+                                                                          'datasets.lidc'] else denorm(x)
+
+    model_parameters = filter(lambda p: p.requires_grad, cond_encoder.parameters())
+    num_parameters = sum([np.prod(p.size()) for p in model_parameters])
+    LOGGER.info('Condition encoder trainable parameters: %d', num_parameters)
+
+    if not isinstance(cond_encoder, DummyEncoder):
+        if params["distributed"]:
+            if params["train_encoder"]:  # add ddp to cond encoder only if training it
+                local_rank = idist.get_local_rank()
+                cond_encoder = nn.parallel.DistributedDataParallel(cond_encoder, device_ids=[local_rank])
+        elif params["multigpu"]:
+            cond_encoder = nn.DataParallel(cond_encoder)
+    return cond_encoder, cond_vis_fn
+
+
+if __name__ == '__main__':
+    a = 1
+
+    # encoder = ResNetEncoder(False, 'x-attention')
+
+    p = {"cond_encoder": "dino_vits8", "dataset_file": "datasets.cityscapes"}
+
+    encoder = ViTExtractor(p["cond_encoder"], stride=8, device="cuda")
+    x_ = torch.randn(size=(2, 3, 128, 256))
+    # encoder.model(x.float().cuda()) # (2, 384)
+    # stride = 8
+    # encoder.extract_descriptors(x.float().cuda()) # (2, 1, 512, 384) --> (2, 1, 16, 32, 384)

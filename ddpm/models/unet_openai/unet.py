@@ -1,9 +1,10 @@
 
 from abc import abstractmethod
-
+from typing import Union
 import math
 
 import numpy as np
+import torch
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,8 +20,6 @@ from .nn import (
     timestep_embedding,
 )
 from .attention import SpatialTransformer
-import logging
-LOGGER = logging.getLogger(__name__)
 
 
 class AttentionPool2d(nn.Module):
@@ -73,12 +72,14 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     support it as an extra input.
     """
 
-    def forward(self, x, emb, context=None):
+    def forward(self, x, emb, context=None, feature_condition=None):
         for layer in self:
             if isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
             elif isinstance(layer, SpatialTransformer):
                 x = layer(x, context)
+            elif isinstance(layer, ResBlock):
+                x = layer(x, feature_condition)
             else:
                 x = layer(x)
         return x
@@ -436,6 +437,8 @@ class UNetModel(nn.Module):
         model_channels,
         out_channels,
         num_res_blocks,
+        num_res_blocks_dec,
+        conditioning,
         cond_encoded_shape,
         attention_resolutions,
         dropout=0,
@@ -453,7 +456,9 @@ class UNetModel(nn.Module):
         use_new_attention_order=False,
         softmax_output=True,
         ce_head=False,
-        feature_cond_encoder=None
+        use_stem=False,
+        feature_cond_target_output_stride: int = 8,  # if feature condition is being used default to inserting it at stride 8
+        feature_cond_target_module_index: Union[list, int] = 11
     ):
         super().__init__()
 
@@ -464,6 +469,7 @@ class UNetModel(nn.Module):
         self.model_channels = model_channels
         self.out_channels = out_channels
         self.num_res_blocks = num_res_blocks
+        self.num_res_blocks_dec = num_res_blocks_dec
         self.attention_resolutions = attention_resolutions
         self.dropout = dropout
         self.channel_mult = channel_mult
@@ -474,34 +480,32 @@ class UNetModel(nn.Module):
         self.num_heads = num_heads
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
+        self.conditioning = conditioning
         self.cond_encoded_shape = cond_encoded_shape
         self.sofmtax_output = softmax_output
         self.use_ce_head = ce_head
-        self.feature_cond_encoder = feature_cond_encoder
-        if feature_cond_encoder is not None:
-            if feature_cond_encoder['type'] == 'resnet':
-                if feature_cond_encoder['scale'] == 'single':
-                    feature_condition_target_layer = feature_cond_encoder['target_layer']
 
-                    self.feature_condition_idx = [int(feature_condition_target_layer[5:])] if feature_condition_target_layer is not None else None
-                elif feature_cond_encoder['scale'] == 'multi':
-                    self.feature_condition_idx = [7, 10, 13]
-
-            elif feature_cond_encoder['type'] == 'dino':
-                if feature_cond_encoder['scale'] == 'single':
-                    feature_condition_target_layer = feature_cond_encoder['target_layer']
-
-                    self.feature_condition_idx = [feature_condition_target_layer] if feature_condition_target_layer is not None else [None]
-
-                elif feature_cond_encoder['scale'] == 'multi':
-                    raise NotImplementedError(f"feature_cond_encoder {feature_cond_encoder['type']} with scale"
-                                              f" {feature_cond_encoder['scale']} not implemented")
-            else:
-                raise NotImplementedError(f"{feature_cond_encoder['type']} not implemented")
-        else:
-            self.feature_condition_idx = []
+        # used only if conditioning == 'concat_pixels_concat_features'
+        # must specify output_stride (equivalent to 'level') at which features are provided
+        # must specify index (in a given level) of resblock where features are provided alongside its input
+        self.using_feature_cond = False
+        self.feature_cond_target_output_stride = feature_cond_target_output_stride
+        self.feature_cond_target_module_index = feature_cond_target_module_index
+        self.feature_cond_channels = 384  # todo unhardcode, this is specific to dino-vits8
 
         time_embed_dim = model_channels * 4
+        if use_stem:
+            self.stem = nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=(3, 3), padding=1, stride=2)
+        else:
+            self.stem = None
+
+        if self.conditioning == 'sum':
+            self.cond_embedder = nn.Linear(cond_encoded_shape[-1], time_embed_dim)
+        elif self.conditioning == 'concat_linproj':
+            self.linear_projection = nn.Conv2d(in_channels=in_channels + 3, out_channels=out_channels, kernel_size=(1, 1))
+        elif self.conditioning == 'concat_pixels_concat_features':
+            self.using_feature_cond = True
+            self.using_pixel_cond = True
 
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
@@ -516,52 +520,45 @@ class UNetModel(nn.Module):
         self.input_blocks = nn.ModuleList(
             [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))]
         )
+
+        # used to collect module details
+        module_index = 0
+        self.level_to_output_stride = dict()
+        module_index = self.collect_module_info(module_index, 1, in_channels, ch, module_type='Conv2d')
+
         self._feature_size = ch
         input_block_chans = [ch]
-        ds = 1
-        input_blocks_cnt = 1  # 0-based
-        for level, mult in enumerate(channel_mult):
-            for _ in range(num_res_blocks):
-                # print(input_blocks_cnt, ds)
-                if feature_cond_encoder is not None:
-                    if feature_cond_encoder['type'] == 'resnet':
-                        if input_blocks_cnt in self.feature_condition_idx:
-                                assert model_channels in [32, 64]
-                                if feature_cond_encoder['scale'] == 'single':
-                                    if input_blocks_cnt == 13:
-                                        ch = 1120 if model_channels == 32 else 1216     # 96 + 1024
-                                    else:
-                                        raise NotImplementedError()
-                                elif feature_cond_encoder['scale'] == 'multi':
-                                    if input_blocks_cnt == 7:
-                                        ch = 256+32 if model_channels == 32 else 256+64
-                                    elif input_blocks_cnt == 10:
-                                        ch = 512+64 if model_channels == 32 else 512+128
-                                    elif input_blocks_cnt == 13:
-                                        ch = 1024+2048+96 if model_channels == 32 else 1024+2048+192
-                                    else:
-                                        raise NotImplementedError()
+        output_stride = 2 if use_stem else 1
 
-                    elif feature_cond_encoder['type'] == 'dino':
-                        if (input_blocks_cnt in self.feature_condition_idx) and feature_cond_encoder['output_stride'] == ds:
-                            LOGGER.info(f"Dino features concatenated at feature_condition_index={self.feature_condition_idx}"
-                                        f" output_stride={ds} -- changing next ResBlock input channels "
-                                        f"from {ch} to {ch + feature_cond_encoder['channels']}")
-                            ch = ch + feature_cond_encoder['channels']
+        self.max_output_stride = 2**(len(channel_mult)-1)
+
+        for level, mult in enumerate(channel_mult):
+
+            for r in range(num_res_blocks):
+                if all([output_stride == self.feature_cond_target_output_stride,
+                        module_index == self.feature_cond_target_module_index,
+                        self.using_feature_cond]):
+                    ch_in = self.feature_cond_channels + ch
+                else:
+                    ch_in = ch
+
+                module_index = self.collect_module_info(module_index, output_stride,
+                                                        ch_in, int(mult * model_channels),
+                                                        module_type='ResBlock')
 
                 layers = [
                     ResBlock(
-                        ch,
+                        ch_in,
                         time_embed_dim,
                         dropout,
                         out_channels=int(mult * model_channels),
                         dims=dims,
                         use_checkpoint=use_checkpoint,
-                        use_scale_shift_norm=use_scale_shift_norm,
-                    )
-                ]
-                ch = int(mult * model_channels)
-                if ds in attention_resolutions:
+                        use_scale_shift_norm=use_scale_shift_norm
+                    )]
+
+                ch = int(mult * model_channels)  # next resblocks input channels
+                if output_stride in attention_resolutions:
                     if num_head_channels == -1:
                         dim_head = ch // num_heads
                     else:
@@ -577,10 +574,16 @@ class UNetModel(nn.Module):
                             num_heads=num_heads,
                             num_head_channels=num_head_channels,
                             use_new_attention_order=use_new_attention_order,
-                        )
+                        ) if not self.conditioning == 'x-attention'
+                        else SpatialTransformer(ch, num_heads, dim_head, depth=1, context_dim=cond_encoded_shape[2])
                     )
+
+                    module_type = 'AttentionBlock' if not self.conditioning == 'x-attention' else 'SpatialTransformer'
+                    module_index = self.collect_module_info(module_index-1, output_stride,
+                                                            ch, (num_heads, num_head_channels),
+                                                            module_type, no_increment=False)
+
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
-                input_blocks_cnt += 1
                 self._feature_size += ch
                 input_block_chans.append(ch)
             if level != len(channel_mult) - 1:
@@ -603,12 +606,17 @@ class UNetModel(nn.Module):
                         )
                     )
                 )
-                input_blocks_cnt += 1
+                module_type = 'ResBlockDown' if resblock_updown else 'Down'
+                module_index = self.collect_module_info(module_index, output_stride,
+                                                        ch, out_ch,
+                                                        module_type)
+
                 ch = out_ch
                 input_block_chans.append(ch)
-                ds *= 2
+                output_stride *= 2
                 self._feature_size += ch
 
+        #  middle
         if num_head_channels == -1:
             dim_head = ch // num_heads
         else:
@@ -632,6 +640,8 @@ class UNetModel(nn.Module):
                 num_heads=num_heads,
                 num_head_channels=num_head_channels,
                 use_new_attention_order=use_new_attention_order,
+            ) if not self.conditioning == 'x-attention' else SpatialTransformer(
+                ch, num_heads, dim_head, depth=1, context_dim=cond_encoded_shape[2]
             ),
             ResBlock(
                 ch,
@@ -642,11 +652,15 @@ class UNetModel(nn.Module):
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
         )
-        self._feature_size += ch
 
+        _ = self.collect_module_info(0, output_stride, ch, ch, 'ResBlock_Attention_ResBlock', 'middle')
+
+        self._feature_size += ch
+        #  decoder
+        module_index = 0
         self.output_blocks = nn.ModuleList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
-            for i in range(num_res_blocks + 1):
+            for i in range(num_res_blocks_dec + 1):
                 ich = input_block_chans.pop()
                 layers = [
                     ResBlock(
@@ -659,8 +673,13 @@ class UNetModel(nn.Module):
                         use_scale_shift_norm=use_scale_shift_norm,
                     )
                 ]
+
+                module_index = self.collect_module_info(module_index, output_stride,
+                                                        ch + ich, int(mult * model_channels),
+                                                        module_type='ResBlock', stage='dec')
+
                 ch = int(model_channels * mult)
-                if ds in attention_resolutions:
+                if output_stride in attention_resolutions:
                     if num_head_channels == -1:
                         dim_head = ch // num_heads
                     else:
@@ -676,9 +695,17 @@ class UNetModel(nn.Module):
                             num_heads=num_heads_upsample,
                             num_head_channels=num_head_channels,
                             use_new_attention_order=use_new_attention_order,
+                        ) if not self.conditioning == 'x-attention' else SpatialTransformer(
+                            ch, num_heads, dim_head, depth=1, context_dim=cond_encoded_shape[2]
                         )
                     )
-                if level and i == num_res_blocks:
+
+                    module_type = 'AttentionBlock' if not self.conditioning == 'x-attention' else 'SpatialTransformer'
+                    module_index = self.collect_module_info(module_index-1, output_stride,
+                                                            ch, (num_heads, num_head_channels),
+                                                            module_type, stage='dec', no_increment=False)
+
+                if level and i == num_res_blocks_dec:
                     out_ch = ch
                     layers.append(
                         ResBlock(
@@ -694,7 +721,13 @@ class UNetModel(nn.Module):
                         if resblock_updown
                         else Upsample(ch, conv_resample, dims=dims, out_channels=out_ch)
                     )
-                    ds //= 2
+
+                    module_type = 'ResBlockUp' if resblock_updown else 'Up'
+                    module_index = self.collect_module_info(module_index-1, output_stride,
+                                                            ch, out_ch,
+                                                            module_type, stage='dec', no_increment=False)
+
+                    output_stride //= 2
                 self.output_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
 
@@ -712,6 +745,11 @@ class UNetModel(nn.Module):
                 zero_module(conv_nd(dims, input_ch, out_channels, 3, padding=1))
             )
 
+        module_type = 'Head' if self.sofmtax_output else 'Head_Softmax'
+        module_index = self.collect_module_info(module_index, output_stride,
+                                                input_ch, out_channels,
+                                                module_type, stage='out')
+
         # option for a parallel ce head
         if self.use_ce_head:
             print('adding an extra ce_head (distinct from diffusion_head) to Unet')
@@ -721,9 +759,46 @@ class UNetModel(nn.Module):
                 nn.SiLU(),
                 zero_module(conv_nd(dims, input_ch, out_channels-1, 3, padding=1))
             )
+            module_type = 'Head_ce'
+            module_index = self.collect_module_info(module_index, output_stride,
+                                                    input_ch, out_channels,
+                                                    module_type, stage='out')
+
             # out_channels-1 is valid only if dataset has ignore class fixme
         else:
             self.out_ce = None
+
+    def collect_module_info(self,
+                            module_index: int,
+                            output_stride: int,
+                            in_channels: int,
+                            out_channels: Union[tuple, int],
+                            module_type: str,
+                            stage='enc',
+                            no_increment=False):
+
+        if stage not in self.level_to_output_stride:
+            self.level_to_output_stride[stage] = dict()
+
+        # assert module_index not in self.level_to_output_stride[stage]
+        if module_index in self.level_to_output_stride[stage]:
+            module_type = [self.level_to_output_stride[stage][module_index]['type'], module_type]
+            in_channels = [self.level_to_output_stride[stage][module_index]['in_channels'], in_channels]
+            out_channels = [self.level_to_output_stride[stage][module_index]['out_channels'], out_channels]
+            self.level_to_output_stride[stage][module_index].update({'in_channels': in_channels,
+                                                                     'out_channels': out_channels,
+                                                                     'type': module_type})
+        else:
+            self.level_to_output_stride[stage][module_index] = dict()  # no repetitions of module index
+        self.level_to_output_stride[stage][module_index] = {'os': output_stride,
+                                                            'in_channels': in_channels,
+                                                            'out_channels': out_channels,
+                                                            'type': module_type}
+        if no_increment:
+            return module_index
+        else:
+            module_index += 1
+            return module_index
 
     def convert_to_fp16(self):
         """
@@ -741,12 +816,13 @@ class UNetModel(nn.Module):
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, input_condition, feature_condition, timesteps, y=None):
+    def forward(self, x, condition, timesteps, feature_condition: Union[None, torch.Tensor] = None, y=None,
+                get_multiscale_predictions=None):
         """
         Apply the model to an input batch.
-
         :param x: an [N x C x ...] Tensor of inputs.
         :param timesteps: a 1-D batch of timesteps.
+        :param feature_condition:
         :param y: an [N] Tensor of labels, if class-conditional.
         :return: an [N x C x ...] Tensor of outputs.
         """
@@ -754,55 +830,75 @@ class UNetModel(nn.Module):
             self.num_classes is not None
         ), "must specify y if and only if the model is class-conditional"
 
+        b,c,H,W = x.shape
+
         hs = []
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 
-        x = th.cat([x, input_condition], dim=1)
-        context = None
+        if self.conditioning == 'sum':
+            condition = self.cond_embedder(condition)
+            emb = emb + condition
+            context = None
+        elif self.conditioning == 'x-attention':
+            context = condition
+        elif self.conditioning == 'concat':
+            x = th.cat([x, condition], dim=1)
+            context = None
+        elif self.conditioning == 'concat_linproj':
+            x = self.linear_projection(th.cat([x, condition], dim=1))
+            context = None
+
+        elif self.conditioning == 'concat_pixels_concat_features':
+            x = th.cat([x, condition], dim=1)
+            context = None
+
+        if self.stem is not None:
+            x = self.stem(x)
 
         if self.num_classes is not None:
             assert y.shape == (x.shape[0],)
             emb = emb + self.label_emb(y)
 
         h = x.type(self.dtype)
-        for idx, module in enumerate(self.input_blocks):
-            # print(idx, h.shape)
-            if feature_condition is not None and idx in self.feature_condition_idx:
-                if self.feature_cond_encoder['type'] == 'resnet':
-                    if self.feature_cond_encoder['scale'] == 'single':
-                        h = th.cat([h, feature_condition], dim=1)
-                    elif self.feature_cond_encoder['scale'] == 'multi':
-                        if idx == 7:
-                            h = th.cat([h, feature_condition['layer1']], dim=1)
-                        elif idx == 10:
-                            h = th.cat([h, feature_condition['layer2']], dim=1)
-                        elif idx == 13:
-                            feature3 = feature_condition['layer3']
-                            feature4 = feature_condition['layer4']
-                            feature4 = F.interpolate(feature4, (8, 16), mode='bilinear', align_corners=False)
-                            h = th.cat([h, feature3, feature4], dim=1)
-                elif self.feature_cond_encoder['type'] == 'dino':
-                    if self.feature_cond_encoder['scale'] == 'single':
-                        h = th.cat([h, feature_condition], dim=1)
-                    else:
-                        raise NotImplementedError()
+        for level, module in enumerate(self.input_blocks):
+            if self.using_feature_cond and \
+                    (self.level_to_output_stride['enc'][level]['os'] == self.feature_cond_target_output_stride) and\
+                    (self.feature_cond_target_module_index == level):
+                h = th.cat([h, feature_condition], dim=1)
 
+            # inshape = h.shape
             h = module(h, emb, context)
+            # outshape = h.shape
+            # print(f'Module: {module.__class__}, inshape: {inshape} outshape: {outshape}')
             hs.append(h)
 
-        # print(idx, h.shape)
+        # bottleneck
         h = self.middle_block(h, emb, context)
-
-        for module in self.output_blocks:
+        # print(f"---bottlenech {h.shape}---")
+        for level, module in enumerate(self.output_blocks):
+            # inshape = h.shape
+            # v = hs.pop()
             h = th.cat([h, hs.pop()], dim=1)
+            # except:
+            #     a = 1
             h = module(h, emb, context)
+            # outshape = h.shape
+            # print(f'Module: {module.__class__}, inshape: {inshape} outshape: {outshape}')
+
         h = h.type(x.dtype)
 
         # output handling
         ret = {"diffusion_out": None, "logits": None}
         diffusion_out = self.out(h)
+
+        if self.stem is not None:
+            diffusion_out = torch.nn.functional.interpolate(diffusion_out, (H,W), mode='bilinear')
+
         ret["diffusion_out"] = diffusion_out
+
         if self.out_ce is not None:
             ce_out = self.out_ce(h)
+            if self.stem is not None:
+                ce_out = torch.nn.functional.interpolate(diffusion_out, (H,W), mode='bilinear')
             ret["logits"] = ce_out
         return ret

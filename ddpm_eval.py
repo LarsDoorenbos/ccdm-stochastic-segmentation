@@ -13,8 +13,7 @@ from evaluation.evaluate_lidc_uncertainty import eval_lidc_uncertainty
 
 
 def set_seeds(seed: int):
-
-    """Function that sets all relevant seeds (by Claudio)
+    """Function that sets all relevant seeds
     :param seed: Seed to use
     """
     random.seed(seed)
@@ -36,15 +35,11 @@ def main(argv):
     with open(params_file, 'r') as f:
         params = yaml.safe_load(f)
 
-    if 'lidc_sampling_speed' in params['dataset_file']:
-        params['dataset_file'] = "datasets.lidc"
-        eval_lidc_sampling_speed(params)
-    elif 'lidc' in params['dataset_file']:
-        eval_lidc_uncertainty(params)   
-    elif 'cityscapes' in params['dataset_file']:
+    params["params_file"] = params_file
+    if 'cityscapes' in params['dataset_file']:
         run_inference_only_cdm(params)
     else:
-        raise ValueError("Unknown dataset")
+        raise ValueError(f"Only cityscapes is supported in this branch dataset instead got {params['dataset_file']}")
 
 
 if __name__ == "__main__":

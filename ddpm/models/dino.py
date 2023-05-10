@@ -315,7 +315,7 @@ class ViTExtractor(nn.Module):
             if not include_cls:
                 desc = [x[:, :, 1:, :] for x in desc]  # remove cls token
 
-            # fix the multiscale case
+
             desc = [x.permute(0, 2, 3, 1).flatten(start_dim=-2, end_dim=-1).unsqueeze(dim=1) for x in desc]
             desc = [x.view(1, 1, self.num_patches[0], self.num_patches[1], -1).squeeze(1).permute(0, 3, 1, 2) for x in desc]
 

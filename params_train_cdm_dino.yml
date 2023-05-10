@@ -1,0 +1,84 @@
+output_path: "./logs/output_${SLURM_JOB_ID}_${NOW}"
+
+cudnn:
+    benchmark: yes
+    enabled: yes
+
+dataset_file: datasets.cityscapes
+
+# without scale jittering i.e resize to target_size
+dataset_pipeline_train: ["flip",  "resize", "colorjitter", "torchvision_normalise"]
+dataset_pipeline_train_settings:
+    target_size:  [64, 64]
+
+dataset_pipeline_val: ["resize", "torchvision_normalise"]
+dataset_pipeline_val_settings:
+    target_size: [64, 64]
+
+dataset_val_max_size: 64  # One of "null" (=full val size), or any number
+class_weights: "uniform"  # One of ["uniform", "weighted", "weighted_cs_train", "weighted_cs_train_v2"]
+
+multigpu: no
+distributed: no # set this to yes to use ddp
+
+mp_loaders: 2
+batch_size: 16
+grad_accumulation: no
+grad_accumulation_step: 4
+max_epochs: 800
+
+optim:
+    name: "Adam"
+    learning_rate: 1.0e-4
+    lr_function: "polynomial"
+    lr_params:
+        power: 1.0     # setting to 1.0 means linear decay
+        min_lr: 1.0e-6 # learning rate value for the final step of training
+    epochs: 800 # total number of epochs to train for if missing then trains for max_epochs (for step > epochs lr = min_lr)
+
+validation_freq: 5000
+display_freq: 100
+n_validation_predictions: 3
+n_validation_images: 4
+
+wandb: no
+wandb_mode: 'offline'  # ['online', 'offline']
+wandb_project: cityscapes-cdm
+
+polyak_enabled: yes
+polyak_alpha: 0.999
+
+diffusion_type: "categorical"
+beta_schedule: "cosine" # One of ["cosine", "linear"]
+beta_schedule_params:
+    s: 0.008
+time_steps: 250
+
+cond_encoder: 'dino_vits8' #'dino_vitb8' #  'swinT'# 'dino_vitb8' # ['resnet', 'none']
+cond_encoder_stride: 8 # ['resnet', 'none']
+train_encoder: no
+conditioning: 'concat_pixels_concat_features' # ['x-attention', 'sum', 'concat', 'concat_linproj']
+
+backbone: "unet_openai"  # One of ["unet", "unetdual", "unet2enc", "unetplus", "unet_openai", "argmaxflow_unet", "resnet50", "resnet101"]
+unet_openai: # 29M model # remove __ to use
+    is_lightweight: no
+    base_channels: 64
+    channel_mult: [1, 1, 2, 2, 4, 4]
+    attention_resolutions: [32, 16, 8]
+    feature_cond_target_output_stride: 8 # output stride where we concatenate dino feats
+    feature_cond_target_module_index: 11  # module index where we concatenate dino feats
+    num_heads: 1  # Ignored if num_head_channels is not -1
+    num_head_channels: 32  # If not -1, num_heads is automatically set to channels//num_head_channels
+    softmax_output: yes # this is the default for build_model
+    ce_head: no # adds an extra head that predicts logits (distinct from denoising head)
+    dropout: 0.0
+    use_fp16: no
+    use_stem: no
+
+
+# used for ms loss
+use_ms_loss: no
+
+init_from: null
+init_skip_keys: ["cond_encoder", "average_cond_encoder"] # use when chkpt does not contain cond_encoder (e.x with frozen dino)
+load_from: null

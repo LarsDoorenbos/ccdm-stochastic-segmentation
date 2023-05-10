@@ -26,6 +26,7 @@ def main(argv):
     os.environ.pop("SLURM_JOBID", None)
     os.environ['WANDB_MODE'] = params['wandb_mode']
 
+    params["params_file"] = params_file
     params['num_gpus'] = torch.cuda.device_count()  # to be passed to run_train
 
     if params['distributed']:
