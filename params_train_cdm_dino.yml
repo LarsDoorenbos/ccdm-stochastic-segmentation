@@ -9,13 +9,13 @@ dataset_file: datasets.cityscapes
 # without scale jittering i.e resize to target_size
 dataset_pipeline_train: ["flip",  "resize", "colorjitter", "torchvision_normalise"]
 dataset_pipeline_train_settings:
-    target_size:  [64, 64]
+    target_size:  [256, 512]
 
 dataset_pipeline_val: ["resize", "torchvision_normalise"]
 dataset_pipeline_val_settings:
-    target_size: [64, 64]
+    target_size: [256, 512]
 
-dataset_val_max_size: 64  # One of "null" (=full val size), or any number
+dataset_val_max_size: 32  # One of "null" (=full val size), or any number
 class_weights: "uniform"  # One of ["uniform", "weighted", "weighted_cs_train", "weighted_cs_train_v2"]
 
 multigpu: no
@@ -25,7 +25,7 @@ mp_loaders: 2
 batch_size: 16
 grad_accumulation: no
 grad_accumulation_step: 4
-max_epochs: 800
+max_epochs: 1
 
 optim:
     name: "Adam"
@@ -38,8 +38,8 @@ optim:
 
 validation_freq: 5000
 display_freq: 100
-n_validation_predictions: 3
-n_validation_images: 4
+n_validation_predictions: 3 # samples per image
+n_validation_images: 4  # images to show
 
 wandb: no
 wandb_mode: 'offline'  # ['online', 'offline']
@@ -59,8 +59,8 @@ cond_encoder_stride: 8 # ['resnet', 'none']
 train_encoder: no
 conditioning: 'concat_pixels_concat_features' # ['x-attention', 'sum', 'concat', 'concat_linproj']
 
-backbone: "unet_openai"  # One of ["unet", "unetdual", "unet2enc", "unetplus", "unet_openai", "argmaxflow_unet", "resnet50", "resnet101"]
-unet_openai: # 29M model # remove __ to use
+backbone: "unet_openai"
+unet_openai: # 29M model
     is_lightweight: no
     base_channels: 64
     channel_mult: [1, 1, 2, 2, 4, 4]

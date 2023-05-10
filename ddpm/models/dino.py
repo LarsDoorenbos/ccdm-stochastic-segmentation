@@ -1,3 +1,5 @@
+# code taken with small adaptation from https://github.com/ShirAmir/dino-vit-features/blob/main/extractor.py
+
 import argparse
 import torch
 import torchvision.transforms
