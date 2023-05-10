@@ -316,7 +316,6 @@ def build_engine(evaluator: Evaluator,
     engine_test = attach_test_step(evaluator, diffusion_type=diffusion_type)
     GpuInfo().attach(engine_test, "gpu")
     LOGGER.info(f"Ignore class {ignore_class} in IoU evaluation...")
-    # cm = ConfusionMatrix(num_classes=num_classes-1)  # 0-18
     cm = ConfusionMatrix(num_classes=num_classes-1)  # 0-18
     cm.attach(engine_test, 'cm')
     IoU(cm).attach(engine_test, "IoU")

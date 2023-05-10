@@ -41,7 +41,7 @@ time_steps: 250
 diffusion_type: "categorical" # 'categorical' # # "continuous_analog_bits"
 
 cond_encoder: 'dino_vits8'
-cond_encoder_stride: 8 # ['resnet', 'none']
+cond_encoder_stride: 8
 train_encoder: no
 conditioning: 'concat_pixels_concat_features' # ['x-attention', 'sum', 'concat', 'concat_linproj']
 
@@ -62,8 +62,5 @@ unet_openai: # 29M model # remove __ to use
     use_fp16: no
     use_stem: no
 
-#load_from: null
-
-#load_from: checkpoints/cdm_dino_256x512/cdm_dino_148000.pt
-load_from: checkpoints/cdm_dino_256x512/cdm_dino_256x512.pt
+load_from: checkpoints/cdm_dino_256x512/cdm_dino_256x512.pt  # path to chekcpoint file
 init_skip_keys: ["cond_encoder", "average_cond_encoder"]
