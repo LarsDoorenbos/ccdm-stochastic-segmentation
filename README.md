@@ -46,6 +46,12 @@ To run the evaluation:
 python ddpm_eval.py params_eval.yml
 ```
 
+## Pretrained models
+
+You can find a pretrained model for LIDCv1 along with the parameter file needed for evaluating it [here](https://drive.google.com/drive/folders/1pcXOZpQlSLJOOhId6yZa_3vYS-L0nA4S).
+
+You can find the code to train and evaluate models on cityscapes as well as a cdm_dino_256x512 checkpoint in the releases. 
+
 ## Citation
 If you find our work relevant to your research, please cite:
 ```
