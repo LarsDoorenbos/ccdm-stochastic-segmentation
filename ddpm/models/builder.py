@@ -43,14 +43,6 @@ def build_model(
         diffusion = DiffusionModel(schedule, time_steps, num_classes, schedule_params=schedule_params)
         input_channels = num_classes
         output_channels = num_classes
-    elif diffusion_type == 'continuous_analog_bits':
-        num_classes = label_shape[0]  # can be accessed from this cause label is in one_hot encoding
-        LOGGER.info(f"Using diffusion model [{diffusion_type}] with num_classes [{num_classes}]"
-                    f" and input channels = bits: [{bits}]")
-        input_channels = bits
-        output_channels = bits
-        diffusion = ContinuousDiffusionModel(schedule, time_steps, num_classes)
-        backbone_params.update({"softmax_output": False})
     else:
         raise NotImplementedError(f'unknown diffusion {diffusion_type} in params.yml')
 
@@ -76,16 +68,12 @@ def build_model(
 
     num_of_parameters = sum(map(torch.numel, model.parameters()))
     LOGGER.info("%s trainable params: %d", backbone, num_of_parameters)
-    LOGGER.info(f"unet lighweight: {backbone_params.get('is_lightweight', False)}")
 
     if params is not None:
         # for logging only
         params['num_params'] = num_of_parameters
         params['unet_openai'] = backbone_params
 
-    if diffusion_type == 'categorical':
-        ret = DenoisingModel(diffusion, model, guidance_scale, guidance_scale_weighting, guidance_loss_fn,
-                             dataset_file, label_smoothing, step_T_sample)
-    else:
-        ret = ContinuousDenoisingModel(diffusion, model, bits, analog_bits_scale, dataset_file, step_T_sample)
+    ret = DenoisingModel(diffusion, model, guidance_scale, guidance_scale_weighting, guidance_loss_fn,
+                         dataset_file, label_smoothing, step_T_sample)
     return ret

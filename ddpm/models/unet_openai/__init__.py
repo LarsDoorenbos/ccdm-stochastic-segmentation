@@ -1,6 +1,4 @@
 from .unet import UNetModel
-from .unetL import UNetModelLight
-from .unetLswin import UNetModelLightSwin
 from typing import Union
 import logging
 LOGGER = logging.getLogger(__name__)
@@ -55,53 +53,6 @@ def create_unet_openai(
         if params is not None:
             LOGGER.info(f"defaulting channel_mult to {channel_mult} for input of min size {image_size}")
             params['unet_openai']['channel_mult'] = channel_mult
-
-    # else:
-    #     channel_mult = tuple(int(ch_mult) for ch_mult in channel_mult.split(","))
-    if is_lightweight:
-
-        if is_with_swin:
-            return UNetModelLightSwin(
-                in_channels=in_channels,
-                model_channels=base_channels,
-                out_channels=out_channels,
-                conditioning=conditioning,
-                attention_resolutions=attention_resolutions,
-                dropout=dropout,
-                channel_mult=channel_mult,
-                num_res_blocks_per_dblock=num_res_blocks_per_dblock,
-                num_heads=num_heads,
-                num_head_channels=num_head_channels,
-                softmax_output=softmax_output,
-                use_stem=use_stem,
-                skip_op=skip_op,
-                feature_cond_channels=feature_cond_channels,
-                feature_cond_target_output_stride=feature_cond_target_output_stride,
-                feature_cond_target_module_index=feature_cond_target_module_index,
-                use_multiscale_predictions=use_multiscale_predictions,
-                multiscale_prediction_resolutions=multiscale_prediction_resolutions
-            )
-
-        else:
-            return UNetModelLight(
-                in_channels=in_channels,
-                model_channels=base_channels,
-                out_channels=out_channels,
-                conditioning=conditioning,
-                attention_resolutions=attention_resolutions,
-                dropout=dropout,
-                channel_mult=channel_mult,
-                num_res_blocks_per_dblock=num_res_blocks_per_dblock,
-                num_heads=num_heads,
-                num_head_channels=num_head_channels,
-                softmax_output=softmax_output,
-                use_stem=use_stem,
-                skip_op=skip_op,
-                feature_cond_target_output_stride=feature_cond_target_output_stride,
-                feature_cond_target_module_index=feature_cond_target_module_index,
-                use_multiscale_predictions=use_multiscale_predictions,
-                multiscale_prediction_resolutions=multiscale_prediction_resolutions
-            )
 
     return UNetModel(
         in_channels=in_channels,
