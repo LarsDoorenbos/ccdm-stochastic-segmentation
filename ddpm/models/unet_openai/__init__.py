@@ -75,5 +75,7 @@ def create_unet_openai(
         resblock_updown=resblock_updown,
         use_new_attention_order=use_new_attention_order,
         softmax_output=softmax_output,
-        ce_head=ce_head
+        ce_head=ce_head,
+        feature_cond_target_output_stride=feature_cond_target_output_stride,
+        feature_cond_target_module_index=feature_cond_target_module_index
     )
