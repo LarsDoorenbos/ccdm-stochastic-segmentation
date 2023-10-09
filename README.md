@@ -55,11 +55,13 @@ You can find the code to train and evaluate models on cityscapes as well as a cd
 ## Citation
 If you find our work relevant to your research, please cite:
 ```
-@article{zbinden2023stochastic,
-  title={Stochastic Segmentation with Conditional Categorical Diffusion Models},
-  author={Zbinden, Lukas and Doorenbos, Lars and Pissas, Theodoros and Sznitman, Raphael and M{\'a}rquez-Neila, Pablo},
-  journal={arXiv preprint arXiv:2303.08888},
-  year={2023}
+@InProceedings{Zbinden_2023_ICCV,
+    author    = {Zbinden, Lukas and Doorenbos, Lars and Pissas, Theodoros and Huber, Adrian Thomas and Sznitman, Raphael and M\'arquez-Neila, Pablo},
+    title     = {Stochastic Segmentation with Conditional Categorical Diffusion Models},
+    booktitle = {Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
+    month     = {October},
+    year      = {2023},
+    pages     = {1119-1129}
 }
 ```
 
